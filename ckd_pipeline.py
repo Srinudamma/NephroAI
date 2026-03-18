@@ -1,12 +1,21 @@
 """
-CKD Prediction Pipeline
+CKD Prediction Pipeline — FIXED VERSION
 Trains all models, computes feature importances, saves artifacts.
+
+Fixes applied:
+  1. Lambda closure bug fixed (enc=le default arg)
+  2. Saves `evaluation_results` (full metrics) instead of partial `results`
+  3. get_feature_importance now correctly unpacks StackingClassifier estimator tuples
+  4. Models trained only ONCE — predictions reused across loops
+  5. plt.show() removed for headless/server compatibility
+  6. local_explain signature cleaned up (removed unused background args)
 """
 
 import numpy as np
 import pandas as pd
 import json
 import pickle
+import os
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -20,12 +29,13 @@ from sklearn.naive_bayes import GaussianNB
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.feature_selection import RFE
-from sklearn.model_selection import StratifiedKFold, cross_val_score
-from sklearn.metrics import (roc_auc_score, accuracy_score, classification_report,
-                              confusion_matrix)
+from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
+from sklearn.metrics import (roc_auc_score, accuracy_score, precision_score,
+                              recall_score, f1_score, classification_report,
+                              confusion_matrix, roc_curve)
 from sklearn.pipeline import Pipeline
 
-# ─── Dataset: REAL CKD Dataset Loading ───────────────────────────────────────
+# ─── Dataset Loading ──────────────────────────────────────────────────────────
 
 print("Loading ChronicKidneyDisease.csv dataset...")
 
@@ -34,11 +44,11 @@ df = pd.read_csv('ChronicKidneyDisease.csv')
 # Clean column names
 df.columns = df.columns.str.strip().str.lower()
 
-# Rename columns for consistency (important for pipeline)
+# Rename columns for consistency
 df = df.rename(columns={
     'classification': 'class',
-    'wc': 'wbcc',
-    'rc': 'rbcc'
+    'wc':  'wbcc',
+    'rc':  'rbcc'
 })
 
 # Drop unnecessary column
@@ -46,19 +56,17 @@ df = df.drop('id', axis=1, errors='ignore')
 
 # Clean target column
 df['class'] = df['class'].astype(str).str.strip().str.lower()
-df['class'] = df['class'].map({
-    'ckd': 'ckd',
-    'notckd': 'notckd'
-})
+df['class'] = df['class'].map({'ckd': 'ckd', 'notckd': 'notckd'})
 
-# Remove rows with unknown class (if any)
+# Remove rows with unknown class
 df = df[df['class'].isin(['ckd', 'notckd'])]
 
-# Replace weird missing values (?, blanks)
+# Replace weird missing values
 df = df.replace(['?', ' ', ''], np.nan)
 
-# Convert numeric columns properly
-NUMERIC_COLS = ['age','bp','sg','al','su','bgr','bu','sc','sod','pot','hemo','pcv','wbcc','rbcc']
+# Convert numeric columns
+NUMERIC_COLS = ['age', 'bp', 'sg', 'al', 'su', 'bgr', 'bu', 'sc',
+                'sod', 'pot', 'hemo', 'pcv', 'wbcc', 'rbcc']
 for col in NUMERIC_COLS:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -69,19 +77,16 @@ print("\nMissing values:\n", df.isnull().sum())
 
 # ─── Preprocessing ────────────────────────────────────────────────────────────
 
-NUMERIC_COLS = ['age','bp','sg','al','su','bgr','bu','sc','sod','pot','hemo','pcv','wbcc','rbcc']
-CAT_COLS     = ['rbc','pc','pcc','ba','htn','dm','cad','appet','pe','ane']
+CAT_COLS = ['rbc', 'pc', 'pcc', 'ba', 'htn', 'dm', 'cad', 'appet', 'pe', 'ane']
 
 X = df.drop('class', axis=1).copy()
 y = (df['class'] == 'ckd').astype(int)
-
-from sklearn.model_selection import train_test_split
 
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, stratify=y, random_state=42
 )
 
-# Encode categoricals
+# ─── FIX 1: Lambda closure bug fixed with `enc=le` default argument ───────────
 encoders = {}
 
 for col in CAT_COLS:
@@ -91,97 +96,81 @@ for col in CAT_COLS:
     mask = X_train[col].notna()
     le.fit(X_train.loc[mask, col].astype(str))
 
-    # Transform train
+    # FIX: capture `le` in default arg to avoid closure over loop variable
     X_train[col] = X_train[col].map(
-        lambda x: le.transform([str(x)])[0] if pd.notna(x) else np.nan
+        lambda x, enc=le: enc.transform([str(x)])[0] if pd.notna(x) else np.nan
     )
-
-    # Transform test (handle unseen values safely)
     X_test[col] = X_test[col].map(
-        lambda x: le.transform([str(x)])[0] if str(x) in le.classes_ else np.nan
+        lambda x, enc=le: enc.transform([str(x)])[0] if str(x) in enc.classes_ else np.nan
     )
 
     encoders[col] = le
 
-# ─── IMPUTATION (FIT ONLY ON TRAIN) ─────────────────────
+# ─── Imputation (fit only on train) ──────────────────────────────────────────
 
 print("\nApplying Iterative Imputer...")
 
 imputer = IterativeImputer(max_iter=10, random_state=42)
+X_train_imp = pd.DataFrame(imputer.fit_transform(X_train), columns=X_train.columns)
+X_test_imp  = pd.DataFrame(imputer.transform(X_test),      columns=X_test.columns)
 
-X_train_imp = imputer.fit_transform(X_train)
-X_test_imp  = imputer.transform(X_test)
-
-# Convert back to DataFrame
-X_train_imp = pd.DataFrame(X_train_imp, columns=X_train.columns)
-X_test_imp  = pd.DataFrame(X_test_imp, columns=X_test.columns)
-
-
-# ─── SCALING (FIT ONLY ON TRAIN) ───────────────────────
+# ─── Scaling (fit only on train) ─────────────────────────────────────────────
 
 scaler = StandardScaler()
-
 X_train_scaled = scaler.fit_transform(X_train_imp)
 X_test_scaled  = scaler.transform(X_test_imp)
 
-# ─── SMOTE (manual implementation without imbalanced-learn) ──────────────────
+# ─── SMOTE (manual, train only) ──────────────────────────────────────────────
 
 def manual_smote(X, y, k=5, random_state=42):
-    """Minimal SMOTE implementation."""
+    """Minimal SMOTE implementation — no imbalanced-learn dependency."""
     np.random.seed(random_state)
     minority_idx = np.where(y == 0)[0]
     majority_idx = np.where(y == 1)[0]
-    
+
     if len(minority_idx) >= len(majority_idx):
         return X, y
-    
+
     n_synthetic = len(majority_idx) - len(minority_idx)
     X_min = X[minority_idx]
     synthetic = []
-    
+
     for _ in range(n_synthetic):
-        idx = np.random.randint(len(X_min))
+        idx    = np.random.randint(len(X_min))
         sample = X_min[idx]
-        # Find k nearest neighbors
-        dists = np.linalg.norm(X_min - sample, axis=1)
+        dists  = np.linalg.norm(X_min - sample, axis=1)
         dists[idx] = np.inf
         nn_idx = np.argsort(dists)[:k]
-        nn = X_min[np.random.choice(nn_idx)]
-        alpha = np.random.rand()
+        nn     = X_min[np.random.choice(nn_idx)]
+        alpha  = np.random.rand()
         synthetic.append(sample + alpha * (nn - sample))
-    
+
     synthetic = np.array(synthetic)
-    X_res = np.vstack([X.values if hasattr(X,'values') else X,
-                       synthetic])
+    X_res = np.vstack([X.values if hasattr(X, 'values') else X, synthetic])
     y_res = np.concatenate([y, np.zeros(n_synthetic, dtype=int)])
     return X_res, y_res
 
+
 print("Applying SMOTE (Train Only)...")
-
-X_train_arr = X_train_scaled
-y_train_arr = y_train.values
-
-X_train_res, y_train_res = manual_smote(X_train_arr, y_train_arr)
-
+X_train_res, y_train_res = manual_smote(X_train_scaled, y_train.values)
 print("After SMOTE:", np.bincount(y_train_res))
 
-# ─── Feature Selection via RFE ────────────────────────────────────────────────
-# ─── RFE (TRAIN ONLY) ─────────────────────────
+# ─── Feature Selection via RFE (train only) ───────────────────────────────────
 
 print("\nApplying RFE...")
 
 rfe = RFE(RandomForestClassifier(n_estimators=100, random_state=42), n_features_to_select=15)
-
 X_train_sel = rfe.fit_transform(X_train_res, y_train_res)
 X_test_sel  = rfe.transform(X_test_scaled)
 
 selected_features = X_train.columns[rfe.support_]
+print("Selected Features:", list(selected_features))
 
-print("Selected Features:", selected_features)
+# ─── FIX 2: Train each model ONCE, reuse predictions ─────────────────────────
 
-# ─── Model Training ───────────────────────────────────────────────────────────
+print("\nTraining and evaluating base models (single pass)...")
 
-base_models = {
+base_model_configs = {
     'Logistic Regression': LogisticRegression(max_iter=1000, random_state=42),
     'Naive Bayes':         GaussianNB(),
     'SVM':                 SVC(probability=True, random_state=42),
@@ -191,173 +180,112 @@ base_models = {
     'AdaBoost':            AdaBoostClassifier(n_estimators=100, random_state=42),
 }
 
-print("\nTraining models...")
+evaluation_results = []   # FIX 2: single list with FULL metrics
+trained_base_models = {}  # FIX 2: store trained models to reuse predictions
+base_predictions    = {}  # FIX 2: store predictions to reuse in ROC curve
 
-results = []
+for name, mdl in base_model_configs.items():
+    mdl.fit(X_train_sel, y_train_res)
+    trained_base_models[name] = mdl
 
-for name, model in base_models.items():
-    model.fit(X_train_sel, y_train_res)
+    y_pred = mdl.predict(X_test_sel)
+    y_prob = mdl.predict_proba(X_test_sel)[:, 1]
+    base_predictions[name] = (y_pred, y_prob)   # cache
 
-    y_pred = model.predict(X_test_sel)
-    y_prob = model.predict_proba(X_test_sel)[:, 1]
-
-    results.append({
-        "Model": name,
-        "Accuracy": accuracy_score(y_test, y_pred),
-        "AUC": roc_auc_score(y_test, y_prob)
+    evaluation_results.append({
+        "Model":     name,
+        "Accuracy":  accuracy_score(y_test, y_pred),
+        "Precision": precision_score(y_test, y_pred),
+        "Recall":    recall_score(y_test, y_pred),
+        "F1 Score":  f1_score(y_test, y_pred),
+        "AUC":       roc_auc_score(y_test, y_prob)
     })
 
-results_df = pd.DataFrame(results).sort_values(by="AUC", ascending=False)
+results_df = pd.DataFrame(evaluation_results).sort_values(by="AUC", ascending=False)
+print("\n📊 Experimental Results Table:\n")
+print(results_df.to_string(index=False))
 
-print("\n📊 Results:\n", results_df)
+# ─── Ensemble Models ──────────────────────────────────────────────────────────
 
-# ─── ENSEMBLE MODELS (CORRECTED) ─────────────────────────
+print("\nTraining Ensemble Models...")
 
-print("\nEvaluating Ensembles...")
-
-# Define models (keep your config, just updated n_estimators optional)
 voting_clf = VotingClassifier(
     estimators=[
-        ('rf', RandomForestClassifier(n_estimators=200, random_state=42)),
-        ('gb', GradientBoostingClassifier(random_state=42)),
-        ('lr', LogisticRegression(max_iter=1000))
+        ('rf',  RandomForestClassifier(n_estimators=200, random_state=42)),
+        ('gb',  GradientBoostingClassifier(random_state=42)),
+        ('lr',  LogisticRegression(max_iter=1000))
     ],
     voting='soft'
 )
 
 stacking_clf = StackingClassifier(
     estimators=[
-        ('rf', RandomForestClassifier(n_estimators=200, random_state=42)),
-        ('gb', GradientBoostingClassifier(random_state=42)),
+        ('rf',  RandomForestClassifier(n_estimators=200, random_state=42)),
+        ('gb',  GradientBoostingClassifier(random_state=42)),
         ('svm', SVC(probability=True))
     ],
     final_estimator=LogisticRegression(),
     cv=3
 )
 
-# Train ONLY on TRAIN data
 voting_clf.fit(X_train_sel, y_train_res)
 stacking_clf.fit(X_train_sel, y_train_res)
 
-# Evaluate on TEST data
-voting_prob = voting_clf.predict_proba(X_test_sel)[:, 1]
+voting_prob   = voting_clf.predict_proba(X_test_sel)[:, 1]
 stacking_prob = stacking_clf.predict_proba(X_test_sel)[:, 1]
 
-v_auc = roc_auc_score(y_test, voting_prob)
-s_auc = roc_auc_score(y_test, stacking_prob)
+print(f"Voting AUC:   {roc_auc_score(y_test, voting_prob):.4f}")
+print(f"Stacking AUC: {roc_auc_score(y_test, stacking_prob):.4f}")
 
-print("Voting AUC:", v_auc)
-print("Stacking AUC:", s_auc)
-# Final model = Stacking (fixed)
 final_model = stacking_clf
-final_model.fit(X_train_sel, y_train_res)
-
 print("\n✅ Final Model: Stacking Classifier")
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-evaluation_results = []
 
-print("\nEvaluating Models on Test Set...\n")
+# ─── ROC Curve (FIX 2: reuse cached predictions, no retraining) ───────────────
 
-for name, model in base_models.items():
-    model.fit(X_train_sel, y_train_res)
-
-    y_pred = model.predict(X_test_sel)
-    y_prob = model.predict_proba(X_test_sel)[:, 1]
-
-    evaluation_results.append({
-        "Model": name,
-        "Accuracy": accuracy_score(y_test, y_pred),
-        "Precision": precision_score(y_test, y_pred),
-        "Recall": recall_score(y_test, y_pred),
-        "F1 Score": f1_score(y_test, y_pred),
-        "AUC": roc_auc_score(y_test, y_prob)
-    })
-
-# Convert to DataFrame
-results_df = pd.DataFrame(evaluation_results)
-results_df = results_df.sort_values(by="AUC", ascending=False)
-
-print("\n📊 Experimental Results Table:\n")
-print(results_df)
-
+import matplotlib
+matplotlib.use('Agg')   # FIX 5: headless backend — no display needed
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_curve
+import seaborn as sns
 
-plt.figure()
-for name, model in base_models.items():
-    model.fit(X_train_sel, y_train_res)
-
-    y_prob = model.predict_proba(X_test_sel)[:, 1]
-
+plt.figure(figsize=(10, 7))
+for name, (_, y_prob) in base_predictions.items():   # reuse cached probs
     fpr, tpr, _ = roc_curve(y_test, y_prob)
     auc = roc_auc_score(y_test, y_prob)
-
     plt.plot(fpr, tpr, label=f"{name} (AUC={auc:.2f})")
 
-plt.plot([0, 1], [0, 1], linestyle='--')
+plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
 plt.xlabel("False Positive Rate")
 plt.ylabel("True Positive Rate")
 plt.title("ROC Curve Comparison")
 plt.legend()
 plt.grid()
+plt.tight_layout()
+plt.savefig("roc_curve.png", dpi=150)
+plt.close()   # FIX 5: close instead of show()
+print("Saved: roc_curve.png")
 
-plt.savefig("roc_curve.png")
-plt.show()
+# ─── Confusion Matrix ────────────────────────────────────────────────────────
 
-import seaborn as sns
-from sklearn.metrics import confusion_matrix
+y_pred_final = final_model.predict(X_test_sel)
+cm = confusion_matrix(y_test, y_pred_final)
 
-
-y_pred = final_model.predict(X_test_sel)
-
-cm = confusion_matrix(y_test, y_pred)
-plt.figure()
+plt.figure(figsize=(6, 5))
 sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
-
-plt.title("Confusion Matrix")
+plt.title("Confusion Matrix — Stacking Classifier")
 plt.xlabel("Predicted")
 plt.ylabel("Actual")
+plt.tight_layout()
+plt.savefig("confusion_matrix.png", dpi=150)
+plt.close()   # FIX 5
+print("Saved: confusion_matrix.png")
 
-plt.savefig("confusion_matrix.png")
-plt.show()
-
-# ─── Feature Importances (SHAP-equivalent via permutation + tree importance) ──
+# ─── Feature Importances ──────────────────────────────────────────────────────
 
 print("\nComputing feature importances...")
 
-def get_feature_importance(model, X, y, feature_names):
-    """Get feature importances from model or permutation."""
-    importances = {}
-    
-    # Tree-based importance
-    if hasattr(model, 'feature_importances_'):
-        fi = model.feature_importances_
-        for i, name in enumerate(feature_names):
-            importances[name] = float(fi[i])
-    elif hasattr(model, 'estimators_'):
-        # Ensemble - average
-        all_fi = []
-        for est in model.estimators_:
-            if hasattr(est, 'feature_importances_'):
-                all_fi.append(est.feature_importances_)
-        if all_fi:
-            fi = np.mean(all_fi, axis=0)
-            for i, name in enumerate(feature_names):
-                importances[name] = float(fi[i])
-        else:
-            # Permutation fallback
-            importances = permutation_importance(model, X, y, feature_names)
-    else:
-        importances = permutation_importance(model, X, y, feature_names)
-    
-    # Normalize
-    total = sum(abs(v) for v in importances.values())
-    if total > 0:
-        importances = {k: v/total for k, v in importances.items()}
-    return importances
-
-def permutation_importance(model, X, y, feature_names, n_repeats=5):
-    base_score = roc_auc_score(y, model.predict_proba(X)[:,1])
+def permutation_importance_fn(model, X, y, feature_names, n_repeats=5):
+    """Permutation-based importance fallback."""
+    base_score = roc_auc_score(y, model.predict_proba(X)[:, 1])
     importances = {}
     for i, name in enumerate(feature_names):
         scores = []
@@ -365,14 +293,50 @@ def permutation_importance(model, X, y, feature_names, n_repeats=5):
             X_perm = X.copy()
             np.random.shuffle(X_perm[:, i])
             try:
-                s = roc_auc_score(y, model.predict_proba(X_perm)[:,1])
-            except:
+                s = roc_auc_score(y, model.predict_proba(X_perm)[:, 1])
+            except Exception:
                 s = base_score
             scores.append(base_score - s)
         importances[name] = float(np.mean(scores))
     return importances
 
-# Use original (non-SMOTE) data for importance evaluation
+
+def get_feature_importance(model, X, y, feature_names):
+    """
+    Get normalised feature importances from model.
+    FIX 3: correctly unpacks StackingClassifier estimator tuples.
+    """
+    importances = {}
+
+    if hasattr(model, 'feature_importances_'):
+        # Direct tree-based importance
+        fi = model.feature_importances_
+        importances = {name: float(fi[i]) for i, name in enumerate(feature_names)}
+
+    elif hasattr(model, 'estimators_'):
+        # Ensemble — FIX 3: handle (name, estimator) tuples from StackingClassifier
+        all_fi = []
+        for est in model.estimators_:
+            actual_est = est[1] if isinstance(est, tuple) else est   # ← FIX 3
+            if hasattr(actual_est, 'feature_importances_'):
+                all_fi.append(actual_est.feature_importances_)
+
+        if all_fi:
+            fi = np.mean(all_fi, axis=0)
+            importances = {name: float(fi[i]) for i, name in enumerate(feature_names)}
+        else:
+            importances = permutation_importance_fn(model, X, y, feature_names)
+    else:
+        importances = permutation_importance_fn(model, X, y, feature_names)
+
+    # Normalise
+    total = sum(abs(v) for v in importances.values())
+    if total > 0:
+        importances = {k: v / total for k, v in importances.items()}
+
+    return importances
+
+
 fi = get_feature_importance(final_model, X_test_sel, y_test.values, selected_features)
 fi_sorted = dict(sorted(fi.items(), key=lambda x: x[1], reverse=True))
 
@@ -380,77 +344,70 @@ print("Feature importances:")
 for feat, importance in fi_sorted.items():
     print(f"  {feat:12s}: {importance:.4f}")
 
-# ─── Per-sample local explanation function ────────────────────────────────────
+# ─── Local Explanation Function (FIX 6: remove unused background args) ────────
 
-def local_explain(model, sample, feature_names, background_mean, background_std):
+def local_explain(model, sample, feature_names):
     """
-    Compute local feature contributions using linear approximation (LIME-style).
-    Perturbs each feature and measures prediction change.
+    LIME-style local explanation by feature perturbation.
+    FIX 6: removed unused background_mean / background_std parameters.
     """
-    base_pred = model.predict_proba(sample.reshape(1,-1))[0,1]
+    base_pred = model.predict_proba(sample.reshape(1, -1))[0, 1]
     contributions = {}
-    
     for i, name in enumerate(feature_names):
-        # Perturb feature to mean (neutralize)
-        perturbed = sample.copy()
-        perturbed[i] = 0.0  # scaled mean = 0
-        new_pred = model.predict_proba(perturbed.reshape(1,-1))[0,1]
+        perturbed    = sample.copy()
+        perturbed[i] = 0.0    # scaled mean = 0
+        new_pred     = model.predict_proba(perturbed.reshape(1, -1))[0, 1]
         contributions[name] = float(base_pred - new_pred)
-    
     return contributions, base_pred
 
-
 # ─── Save Artifacts ───────────────────────────────────────────────────────────
-print("DEBUG imputer type:", type(imputer))
 
-print("\nSaving artifacts...")
+print(f"\nDEBUG imputer type: {type(imputer)}")
+print("Saving artifacts...")
 
 feature_stats = {
     col: {
         'mean': float(X_train_imp[col].mean()),
-        'std': float(X_train_imp[col].std()),
-        'min': float(X_train_imp[col].min()),
-        'max': float(X_train_imp[col].max()),
+        'std':  float(X_train_imp[col].std()),
+        'min':  float(X_train_imp[col].min()),
+        'max':  float(X_train_imp[col].max()),
     }
     for col in X_train.columns
 }
 
 artifacts = {
-    "model": final_model,
-    "imputer": imputer,        # ensure object stored
-    "scaler": scaler,
-    "encoders": encoders,
-    "rfe": rfe,
+    "model":             final_model,
+    "imputer":           imputer,
+    "scaler":            scaler,
+    "encoders":          encoders,
+    "rfe":               rfe,
     "selected_features": list(selected_features),
-    "all_features": list(X.columns),
-    "numeric_cols": NUMERIC_COLS,
-    "cat_cols": CAT_COLS,
-    "model_results": results,
-    "best_model_name": "Stacking",
+    "all_features":      list(X.columns),
+    "numeric_cols":      NUMERIC_COLS,
+    "cat_cols":          CAT_COLS,
+    "model_results":     evaluation_results,   # FIX 2: full metrics
+    "best_model_name":   "Stacking",
     "global_importances": fi_sorted,
-    "feature_stats": feature_stats
+    "feature_stats":     feature_stats
 }
-import os
 
 save_path = os.path.join(os.getcwd(), "ckd_artifacts.pkl")
-
 with open(save_path, "wb") as f:
     pickle.dump(artifacts, f)
 
-# Also save as JSON for the web app
+# JSON sidecar (non-model info for web use)
 json_artifacts = {
-    'selected_features': list(selected_features),
-    'all_features': list(X.columns),
-    'numeric_cols': NUMERIC_COLS,
-    'cat_cols': CAT_COLS,
-    'model_results': results,
-    'best_model_name': "Stacking",
+    'selected_features':  list(selected_features),
+    'all_features':       list(X.columns),
+    'numeric_cols':       NUMERIC_COLS,
+    'cat_cols':           CAT_COLS,
+    'model_results':      evaluation_results,   # FIX 2: full metrics
+    'best_model_name':    "Stacking",
     'global_importances': fi_sorted,
-    "feature_stats": feature_stats
+    'feature_stats':      feature_stats
 }
 
 json_path = os.path.join(os.getcwd(), "ckd_model_info.json")
-
 with open(json_path, "w") as f:
     json.dump(json_artifacts, f, indent=2)
 

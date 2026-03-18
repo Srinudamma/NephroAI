@@ -74,36 +74,57 @@
     {
       "Model": "Logistic Regression",
       "Accuracy": 0.975,
+      "Precision": 1.0,
+      "Recall": 0.96,
+      "F1 Score": 0.9795918367346939,
       "AUC": 0.998
     },
     {
       "Model": "Naive Bayes",
       "Accuracy": 0.975,
+      "Precision": 1.0,
+      "Recall": 0.96,
+      "F1 Score": 0.9795918367346939,
       "AUC": 0.9986666666666667
     },
     {
       "Model": "SVM",
       "Accuracy": 0.9875,
+      "Precision": 1.0,
+      "Recall": 0.98,
+      "F1 Score": 0.98989898989899,
       "AUC": 0.9973333333333334
     },
     {
       "Model": "Decision Tree",
       "Accuracy": 0.9625,
+      "Precision": 1.0,
+      "Recall": 0.94,
+      "F1 Score": 0.9690721649484536,
       "AUC": 0.97
     },
     {
       "Model": "Random Forest",
       "Accuracy": 0.9875,
+      "Precision": 1.0,
+      "Recall": 0.98,
+      "F1 Score": 0.98989898989899,
       "AUC": 1.0
     },
     {
       "Model": "Gradient Boosting",
       "Accuracy": 0.975,
+      "Precision": 1.0,
+      "Recall": 0.96,
+      "F1 Score": 0.9795918367346939,
       "AUC": 0.99
     },
     {
       "Model": "AdaBoost",
       "Accuracy": 0.9875,
+      "Precision": 1.0,
+      "Recall": 0.98,
+      "F1 Score": 0.98989898989899,
       "AUC": 0.99
     }
   ],
