@@ -323,11 +323,12 @@ else:
 
     df_results = pd.DataFrame(results_dict)
 
-# Optional formatting
+    # Optional formatting
     df_results = df_results.sort_values(by="AUC", ascending=False)
-    df_results['AUC-ROC'] = df_results['AUC-ROC'].map('{:.4f}'.format)
-    df_results['Std Dev']  = df_results['Std Dev'].map('±{:.4f}'.format)
     df_results['Best'] = df_results['Model'].apply(lambda x: '⭐' if x == best_name else '')
+    # Format columns safely
+    df_results['AUC'] = df_results['AUC'].map('{:.4f}'.format)
+    df_results['Accuracy'] = df_results['Accuracy'].map('{:.4f}'.format)
     st.dataframe(df_results, use_container_width=True, hide_index=True)
 
     # Global importance chart
