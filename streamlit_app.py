@@ -165,12 +165,16 @@ def run_prediction(input_data):
     # ⭐ Force correct column order
     df = df[all_feats]
 
+    df = df.apply(pd.to_numeric, errors='ignore')
+
     # ⭐ Encode categorical safely
     for col, enc in encoders.items():
         if col in df.columns:
             df[col] = df[col].astype(str)
             try:
-                df[col] = enc.transform(df[col])
+                df[col] = df[col].apply(
+    lambda x: enc.transform([x])[0] if x in enc.classes_ else np.nan
+)
             except:
                 df[col] = np.nan
 
@@ -181,7 +185,7 @@ def run_prediction(input_data):
     X_sc = pd.DataFrame(scaler.transform(X_imp), columns=all_feats)
 
     # ⭐ Feature selection
-    X_sel = X_sc[selected_feats].values
+    X_sel = X_sc.values[:, rfe.support_]
 
     # ⭐ Predict
     prob = model.predict_proba(X_sel)[0, 1]
