@@ -47,14 +47,19 @@ st.markdown("""
 @st.cache_resource
 def load_artifacts():
     import os
-    pkl_path = 'ckd_artifacts.pkl'
     
-    # If pkl missing or incompatible, regenerate it
+    # Resolve paths relative to this script's location
+    base_dir  = os.path.dirname(os.path.abspath(__file__))
+    pkl_path  = os.path.join(base_dir, 'ckd_artifacts.pkl')
+    pipe_path = os.path.join(base_dir, 'ckd_pipeline.py')
+
     if not os.path.exists(pkl_path):
-        with st.spinner("⏳ First-time setup: Training models... (2-3 mins)"):
-            import subprocess
-            subprocess.run(["python", "ckd_pipeline.py"], check=True)
-    
+        with st.spinner("⏳ First-time setup: Training models... (~3 mins)"):
+            import importlib.util
+            spec   = importlib.util.spec_from_file_location("ckd_pipeline", pipe_path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)   # runs the pipeline in-process
+
     try:
         with open(pkl_path, 'rb') as f:
             return pickle.load(f)

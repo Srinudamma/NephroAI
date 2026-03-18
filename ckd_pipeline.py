@@ -35,6 +35,17 @@ from sklearn.metrics import (roc_auc_score, accuracy_score, precision_score,
                               confusion_matrix, roc_curve)
 from sklearn.pipeline import Pipeline
 
+import os
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Then replace all bare filenames with:
+df = pd.read_csv(os.path.join(BASE_DIR, 'ChronicKidneyDisease.csv'))
+
+# And the save paths:
+save_path = os.path.join(BASE_DIR, 'ckd_artifacts.pkl')
+json_path = os.path.join(BASE_DIR, 'ckd_model_info.json')
+
+
 # ─── Dataset Loading ──────────────────────────────────────────────────────────
 
 print("Loading ChronicKidneyDisease.csv dataset...")
