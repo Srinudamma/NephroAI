@@ -25,86 +25,47 @@ from sklearn.metrics import (roc_auc_score, accuracy_score, classification_repor
                               confusion_matrix)
 from sklearn.pipeline import Pipeline
 
-# ─── Dataset: UCI CKD (400 samples synthetic-replica) ────────────────────────
+# ─── Dataset: REAL CKD Dataset Loading ───────────────────────────────────────
 
-np.random.seed(42)
-N = 400
+print("Loading ChronicKidneyDisease.csv dataset...")
 
-def make_ckd_dataset(n=400):
-    """Generate a realistic replica of UCI CKD dataset statistics."""
-    ckd = int(n * 0.625)   # 250 CKD, 150 not-CKD
-    nckd = n - ckd
+df = pd.read_csv('ChronicKidneyDisease.csv')
 
-    def col(ckd_vals, nckd_vals, missing_rate=0.0):
-        arr = np.concatenate([ckd_vals, nckd_vals]).astype(float)
-        if missing_rate > 0:
-            mask = np.random.rand(n) < missing_rate
-            arr[mask] = np.nan
-        return arr
+# Clean column names
+df.columns = df.columns.str.strip().str.lower()
 
-    age = col(np.random.normal(58, 14, ckd), np.random.normal(45, 16, nckd), 0.02)
-    bp  = col(np.random.normal(80, 15, ckd), np.random.normal(70, 10, nckd), 0.04)
-    sg  = col(np.random.choice([1.005,1.010,1.015,1.020,1.025], ckd, p=[0.35,0.3,0.2,0.1,0.05]),
-              np.random.choice([1.005,1.010,1.015,1.020,1.025], nckd, p=[0.05,0.1,0.2,0.35,0.3]), 0.02)
-    al  = col(np.random.choice([0,1,2,3,4,5], ckd, p=[0.1,0.15,0.2,0.2,0.2,0.15]),
-              np.random.choice([0,1,2,3,4,5], nckd, p=[0.7,0.15,0.08,0.04,0.02,0.01]), 0.03)
-    su  = col(np.random.choice([0,1,2,3,4,5], ckd, p=[0.4,0.2,0.15,0.1,0.1,0.05]),
-              np.random.choice([0,1,2,3,4,5], nckd, p=[0.7,0.15,0.08,0.04,0.02,0.01]), 0.03)
+# Rename columns for consistency (important for pipeline)
+df = df.rename(columns={
+    'classification': 'class',
+    'wc': 'wbcc',
+    'rc': 'rbcc'
+})
 
-    # Categorical binary
-    def bcat(p_ckd, p_nckd, mr=0.05):
-        arr = np.concatenate([
-            np.random.choice(['yes','no'], ckd, p=[p_ckd, 1-p_ckd]),
-            np.random.choice(['yes','no'], nckd, p=[p_nckd, 1-p_nckd])
-        ])
-        mask = np.random.rand(n) < mr
-        arr = arr.astype(object)
-        arr[mask] = np.nan
-        return arr
+# Drop unnecessary column
+df = df.drop('id', axis=1, errors='ignore')
 
-    rbc  = np.concatenate([np.random.choice(['normal','abnormal'], ckd, p=[0.35,0.65]),
-                            np.random.choice(['normal','abnormal'], nckd, p=[0.75,0.25])]).astype(object)
-    rbc[np.random.rand(n)<0.04] = np.nan
+# Clean target column
+df['class'] = df['class'].astype(str).str.strip().str.lower()
+df['class'] = df['class'].map({
+    'ckd': 'ckd',
+    'notckd': 'notckd'
+})
 
-    pc   = np.concatenate([np.random.choice(['normal','abnormal'], ckd, p=[0.35,0.65]),
-                            np.random.choice(['normal','abnormal'], nckd, p=[0.80,0.20])]).astype(object)
-    pcc  = bcat(0.55, 0.05)
-    ba   = bcat(0.40, 0.04)
-    bgr  = col(np.random.normal(148, 75, ckd), np.random.normal(105, 30, nckd), 0.04)
-    bu   = col(np.random.normal(68, 40, ckd), np.random.normal(35, 15, nckd), 0.03)
-    sc   = col(np.random.lognormal(0.9, 0.6, ckd), np.random.lognormal(0.1, 0.3, nckd), 0.04)
-    sod  = col(np.random.normal(133, 10, ckd), np.random.normal(141, 4, nckd), 0.05)
-    pot  = col(np.random.normal(4.5, 1.2, ckd), np.random.normal(4.1, 0.6, nckd), 0.05)
-    hemo = col(np.random.normal(10.2, 2.5, ckd), np.random.normal(14.5, 1.5, nckd), 0.03)
-    pcv  = col(np.random.normal(32, 8, ckd), np.random.normal(44, 4, nckd), 0.03)
-    wbcc = col(np.random.normal(9000, 3500, ckd), np.random.normal(7500, 2000, nckd), 0.04)
-    rbcc = col(np.random.normal(3.7, 1.0, ckd), np.random.normal(5.0, 0.5, nckd), 0.04)
-    htn  = bcat(0.75, 0.25)
-    dm   = bcat(0.55, 0.25)
-    cad  = bcat(0.30, 0.08)
-    appet= np.concatenate([np.random.choice(['good','poor'], ckd, p=[0.35,0.65]),
-                            np.random.choice(['good','poor'], nckd, p=[0.85,0.15])]).astype(object)
-    appet[np.random.rand(n)<0.04] = np.nan
-    pe   = bcat(0.45, 0.06)
-    ane  = bcat(0.55, 0.10)
+# Remove rows with unknown class (if any)
+df = df[df['class'].isin(['ckd', 'notckd'])]
 
-    target = np.array(['ckd']*ckd + ['notckd']*nckd)
+# Replace weird missing values (?, blanks)
+df = df.replace(['?', ' ', ''], np.nan)
 
-    df = pd.DataFrame({
-        'age':age,'bp':bp,'sg':sg,'al':al,'su':su,'rbc':rbc,'pc':pc,'pcc':pcc,
-        'ba':ba,'bgr':bgr,'bu':bu,'sc':sc,'sod':sod,'pot':pot,'hemo':hemo,
-        'pcv':pcv,'wbcc':wbcc,'rbcc':rbcc,'htn':htn,'dm':dm,'cad':cad,
-        'appet':appet,'pe':pe,'ane':ane,'class':target
-    })
+# Convert numeric columns properly
+NUMERIC_COLS = ['age','bp','sg','al','su','bgr','bu','sc','sod','pot','hemo','pcv','wbcc','rbcc']
+for col in NUMERIC_COLS:
+    if col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    # Shuffle
-    df = df.sample(frac=1, random_state=42).reset_index(drop=True)
-    return df
-
-print("Generating CKD dataset...")
-df = make_ckd_dataset(N)
 print(f"Dataset shape: {df.shape}")
 print(f"Class distribution:\n{df['class'].value_counts()}")
+print("\nMissing values:\n", df.isnull().sum())
 
 # ─── Preprocessing ────────────────────────────────────────────────────────────
 
@@ -254,6 +215,83 @@ model_map = {
 
 final_model = model_map.get(best_name, RandomForestClassifier(n_estimators=200, random_state=42))
 final_model.fit(X_sel, y_res)
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+print("\nCreating Train-Test Split for Evaluation...")
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X_sel, y_res, test_size=0.2, random_state=42, stratify=y_res
+)
+
+evaluation_results = []
+
+print("\nEvaluating Models on Test Set...\n")
+
+for name, model in base_models.items():
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    y_prob = model.predict_proba(X_test)[:, 1]
+
+    evaluation_results.append({
+        "Model": name,
+        "Accuracy": accuracy_score(y_test, y_pred),
+        "Precision": precision_score(y_test, y_pred),
+        "Recall": recall_score(y_test, y_pred),
+        "F1 Score": f1_score(y_test, y_pred),
+        "AUC": roc_auc_score(y_test, y_prob)
+    })
+
+# Convert to DataFrame
+results_df = pd.DataFrame(evaluation_results)
+results_df = results_df.sort_values(by="AUC", ascending=False)
+
+print("\n📊 Experimental Results Table:\n")
+print(results_df)
+
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_curve
+
+plt.figure()
+
+for name, model in base_models.items():
+    model.fit(X_train, y_train)
+    y_prob = model.predict_proba(X_test)[:, 1]
+
+    fpr, tpr, _ = roc_curve(y_test, y_prob)
+    auc = roc_auc_score(y_test, y_prob)
+
+    plt.plot(fpr, tpr, label=f"{name} (AUC={auc:.2f})")
+
+plt.plot([0, 1], [0, 1], linestyle='--')
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC Curve Comparison")
+plt.legend()
+plt.grid()
+
+plt.savefig("roc_curve.png")
+plt.show()
+
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
+
+# Use best model
+best_model = final_model
+
+y_pred = best_model.predict(X_test)
+cm = confusion_matrix(y_test, y_pred)
+
+plt.figure()
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+
+plt.title("Confusion Matrix")
+plt.xlabel("Predicted")
+plt.ylabel("Actual")
+
+plt.savefig("confusion_matrix.png")
+plt.show()
 
 # ─── Feature Importances (SHAP-equivalent via permutation + tree importance) ──
 
