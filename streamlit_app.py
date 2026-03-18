@@ -321,13 +321,23 @@ else:
     st.markdown("## 🏆 Model Performance Leaderboard")
     st.markdown("5-fold stratified cross-validation on SMOTE-balanced UCI CKD data")
 
-    df_results = pd.DataFrame([
-        {'Model': k, 'AUC-ROC': v['mean_auc'], 'Std Dev': v['std_auc']}
-        for k,v in results_dict.items()
-    ]).sort_values('AUC-ROC', ascending=False)
-    df_results['AUC-ROC'] = df_results['AUC-ROC'].map('{:.4f}'.format)
-    df_results['Std Dev']  = df_results['Std Dev'].map('±{:.4f}'.format)
-    df_results['Best'] = df_results['Model'].apply(lambda x: '⭐' if x == best_name else '')
+    df_results = pd.DataFrame(results_dict)
+
+    # 🔐 Safe column detection
+    if "AUC" in df_results.columns:
+        df_results = df_results.sort_values(by="AUC", ascending=False)
+    elif "Accuracy" in df_results.columns:
+        df_results = df_results.sort_values(by="Accuracy", ascending=False)
+    
+    # Highlight best model
+    df_results['Best'] = df_results['Model'].apply(
+    lambda x: '⭐' if x == best_name else ''
+    )
+    # Safe formatting
+    if "AUC" in df_results.columns:
+        df_results['AUC'] = df_results['AUC'].map('{:.4f}'.format)
+    if "Accuracy" in df_results.columns:
+        df_results['Accuracy'] = df_results['Accuracy'].map('{:.4f}'.format)
     st.dataframe(df_results, use_container_width=True, hide_index=True)
 
     # Global importance chart
