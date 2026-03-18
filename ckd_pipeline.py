@@ -75,25 +75,54 @@ CAT_COLS     = ['rbc','pc','pcc','ba','htn','dm','cad','appet','pe','ane']
 X = df.drop('class', axis=1).copy()
 y = (df['class'] == 'ckd').astype(int)
 
+from sklearn.model_selection import train_test_split
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
+)
+
 # Encode categoricals
 encoders = {}
+
 for col in CAT_COLS:
     le = LabelEncoder()
-    mask = X[col].notna()
-    encoded = le.fit_transform(X.loc[mask, col].astype(str))
-    X[col] = X[col].astype(object)
-    X.loc[mask, col] = encoded.astype(float)
-    X[col] = pd.to_numeric(X[col], errors='coerce')
+
+    # Fit ONLY on training data
+    mask = X_train[col].notna()
+    le.fit(X_train.loc[mask, col].astype(str))
+
+    # Transform train
+    X_train[col] = X_train[col].map(
+        lambda x: le.transform([str(x)])[0] if pd.notna(x) else np.nan
+    )
+
+    # Transform test (handle unseen values safely)
+    X_test[col] = X_test[col].map(
+        lambda x: le.transform([str(x)])[0] if str(x) in le.classes_ else np.nan
+    )
+
     encoders[col] = le
 
-# Iterative imputation
-print("\nApplying Iterative Imputer...")
-imputer = IterativeImputer(max_iter=10, random_state=42)
-X_imp = pd.DataFrame(imputer.fit_transform(X), columns=X.columns)
+# ─── IMPUTATION (FIT ONLY ON TRAIN) ─────────────────────
 
-# Scale
+print("\nApplying Iterative Imputer...")
+
+imputer = IterativeImputer(max_iter=10, random_state=42)
+
+X_train_imp = imputer.fit_transform(X_train)
+X_test_imp  = imputer.transform(X_test)
+
+# Convert back to DataFrame
+X_train_imp = pd.DataFrame(X_train_imp, columns=X_train.columns)
+X_test_imp  = pd.DataFrame(X_test_imp, columns=X_test.columns)
+
+
+# ─── SCALING (FIT ONLY ON TRAIN) ───────────────────────
+
 scaler = StandardScaler()
-X_scaled = pd.DataFrame(scaler.fit_transform(X_imp), columns=X.columns)
+
+X_train_scaled = scaler.fit_transform(X_train_imp)
+X_test_scaled  = scaler.transform(X_test_imp)
 
 # ─── SMOTE (manual implementation without imbalanced-learn) ──────────────────
 
@@ -127,27 +156,30 @@ def manual_smote(X, y, k=5, random_state=42):
     y_res = np.concatenate([y, np.zeros(n_synthetic, dtype=int)])
     return X_res, y_res
 
-print("Applying SMOTE...")
-X_arr = X_scaled.values
-X_res, y_res = manual_smote(X_arr, y.values)
-print(f"After SMOTE: {X_res.shape[0]} samples, class balance: {np.bincount(y_res)}")
+print("Applying SMOTE (Train Only)...")
+
+X_train_arr = X_train_scaled
+y_train_arr = y_train.values
+
+X_train_res, y_train_res = manual_smote(X_train_arr, y_train_arr)
+
+print("After SMOTE:", np.bincount(y_train_res))
 
 # ─── Feature Selection via RFE ────────────────────────────────────────────────
+# ─── RFE (TRAIN ONLY) ─────────────────────────
 
-print("\nApplying RFE with Random Forest...")
-rf_rfe = RandomForestClassifier(n_estimators=50, random_state=42)
-rfe = RFE(rf_rfe, n_features_to_select=15, step=1)
-rfe.fit(X_res, y_res)
+print("\nApplying RFE...")
 
-selected_features = X_scaled.columns[rfe.support_].tolist()
-print(f"Selected features ({len(selected_features)}): {selected_features}")
+rfe = RFE(RandomForestClassifier(n_estimators=100, random_state=42), n_features_to_select=15)
 
-X_sel = X_res[:, rfe.support_]
-X_orig_sel = X_arr[:, rfe.support_]  # original (pre-SMOTE) for evaluation
+X_train_sel = rfe.fit_transform(X_train_res, y_train_res)
+X_test_sel  = rfe.transform(X_test_scaled)
+
+selected_features = X_train.columns[rfe.support_]
+
+print("Selected Features:", selected_features)
 
 # ─── Model Training ───────────────────────────────────────────────────────────
-
-print("\nTraining models...")
 
 base_models = {
     'Logistic Regression': LogisticRegression(max_iter=1000, random_state=42),
@@ -159,80 +191,78 @@ base_models = {
     'AdaBoost':            AdaBoostClassifier(n_estimators=100, random_state=42),
 }
 
-cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-results = {}
+print("\nTraining models...")
+
+results = []
 
 for name, model in base_models.items():
-    scores = cross_val_score(model, X_sel, y_res, cv=cv, scoring='roc_auc')
-    results[name] = {'mean_auc': scores.mean(), 'std_auc': scores.std()}
-    print(f"  {name:25s}: AUC = {scores.mean():.4f} ± {scores.std():.4f}")
+    model.fit(X_train_sel, y_train_res)
 
-# Ensemble: Voting
+    y_pred = model.predict(X_test_sel)
+    y_prob = model.predict_proba(X_test_sel)[:, 1]
+
+    results.append({
+        "Model": name,
+        "Accuracy": accuracy_score(y_test, y_pred),
+        "AUC": roc_auc_score(y_test, y_prob)
+    })
+
+results_df = pd.DataFrame(results).sort_values(by="AUC", ascending=False)
+
+print("\n📊 Results:\n", results_df)
+
+# ─── ENSEMBLE MODELS (CORRECTED) ─────────────────────────
+
+print("\nEvaluating Ensembles...")
+
+# Define models (keep your config, just updated n_estimators optional)
 voting_clf = VotingClassifier(
     estimators=[
-        ('rf',  RandomForestClassifier(n_estimators=100, random_state=42)),
-        ('gb',  GradientBoostingClassifier(n_estimators=100, random_state=42)),
-        ('lr',  LogisticRegression(max_iter=1000, random_state=42)),
+        ('rf', RandomForestClassifier(n_estimators=200, random_state=42)),
+        ('gb', GradientBoostingClassifier(random_state=42)),
+        ('lr', LogisticRegression(max_iter=1000))
     ],
     voting='soft'
 )
-v_scores = cross_val_score(voting_clf, X_sel, y_res, cv=cv, scoring='roc_auc')
-results['Voting Ensemble'] = {'mean_auc': v_scores.mean(), 'std_auc': v_scores.std()}
-print(f"  {'Voting Ensemble':25s}: AUC = {v_scores.mean():.4f} ± {v_scores.std():.4f}")
 
-# Ensemble: Stacking
 stacking_clf = StackingClassifier(
     estimators=[
-        ('rf',  RandomForestClassifier(n_estimators=100, random_state=42)),
-        ('gb',  GradientBoostingClassifier(n_estimators=100, random_state=42)),
-        ('svm', SVC(probability=True, random_state=42)),
+        ('rf', RandomForestClassifier(n_estimators=200, random_state=42)),
+        ('gb', GradientBoostingClassifier(random_state=42)),
+        ('svm', SVC(probability=True))
     ],
-    final_estimator=LogisticRegression(max_iter=1000),
+    final_estimator=LogisticRegression(),
     cv=3
 )
-s_scores = cross_val_score(stacking_clf, X_sel, y_res, cv=cv, scoring='roc_auc')
-results['Stacking Ensemble'] = {'mean_auc': s_scores.mean(), 'std_auc': s_scores.std()}
-print(f"  {'Stacking Ensemble':25s}: AUC = {s_scores.mean():.4f} ± {s_scores.std():.4f}")
 
-# Best model
-best_name = max(results, key=lambda k: results[k]['mean_auc'])
-print(f"\nBest model: {best_name} (AUC={results[best_name]['mean_auc']:.4f})")
+# Train ONLY on TRAIN data
+voting_clf.fit(X_train_sel, y_train_res)
+stacking_clf.fit(X_train_sel, y_train_res)
 
-# Train best model on full SMOTE data
-print(f"\nTraining final model ({best_name}) on full dataset...")
+# Evaluate on TEST data
+voting_prob = voting_clf.predict_proba(X_test_sel)[:, 1]
+stacking_prob = stacking_clf.predict_proba(X_test_sel)[:, 1]
 
-model_map = {
-    'Random Forest':      RandomForestClassifier(n_estimators=200, random_state=42),
-    'Gradient Boosting':  GradientBoostingClassifier(n_estimators=200, random_state=42),
-    'AdaBoost':           AdaBoostClassifier(n_estimators=200, random_state=42),
-    'Logistic Regression':LogisticRegression(max_iter=1000, random_state=42),
-    'Naive Bayes':        GaussianNB(),
-    'SVM':                SVC(probability=True, random_state=42),
-    'Decision Tree':      DecisionTreeClassifier(max_depth=6, random_state=42),
-    'Voting Ensemble':    voting_clf,
-    'Stacking Ensemble':  stacking_clf,
-}
+v_auc = roc_auc_score(y_test, voting_prob)
+s_auc = roc_auc_score(y_test, stacking_prob)
 
-final_model = model_map.get(best_name, RandomForestClassifier(n_estimators=200, random_state=42))
-final_model.fit(X_sel, y_res)
+print("Voting AUC:", v_auc)
+print("Stacking AUC:", s_auc)
+# Final model = Stacking (fixed)
+final_model = stacking_clf
+final_model.fit(X_train_sel, y_train_res)
 
-from sklearn.model_selection import train_test_split
+print("\n✅ Final Model: Stacking Classifier")
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-
-print("\nCreating Train-Test Split for Evaluation...")
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X_sel, y_res, test_size=0.2, random_state=42, stratify=y_res
-)
-
 evaluation_results = []
 
 print("\nEvaluating Models on Test Set...\n")
 
 for name, model in base_models.items():
-    model.fit(X_train, y_train)
-    y_pred = model.predict(X_test)
-    y_prob = model.predict_proba(X_test)[:, 1]
+    model.fit(X_train_sel, y_train_res)
+
+    y_pred = model.predict(X_test_sel)
+    y_prob = model.predict_proba(X_test_sel)[:, 1]
 
     evaluation_results.append({
         "Model": name,
@@ -254,10 +284,10 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve
 
 plt.figure()
-
 for name, model in base_models.items():
-    model.fit(X_train, y_train)
-    y_prob = model.predict_proba(X_test)[:, 1]
+    model.fit(X_train_sel, y_train_res)
+
+    y_prob = model.predict_proba(X_test_sel)[:, 1]
 
     fpr, tpr, _ = roc_curve(y_test, y_prob)
     auc = roc_auc_score(y_test, y_prob)
@@ -277,12 +307,10 @@ plt.show()
 import seaborn as sns
 from sklearn.metrics import confusion_matrix
 
-# Use best model
-best_model = final_model
 
-y_pred = best_model.predict(X_test)
+y_pred = final_model.predict(X_test_sel)
+
 cm = confusion_matrix(y_test, y_pred)
-
 plt.figure()
 sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
 
@@ -345,7 +373,7 @@ def permutation_importance(model, X, y, feature_names, n_repeats=5):
     return importances
 
 # Use original (non-SMOTE) data for importance evaluation
-fi = get_feature_importance(final_model, X_orig_sel, y.values, selected_features)
+fi = get_feature_importance(final_model, X_test_sel, y_test.values, selected_features)
 fi_sorted = dict(sorted(fi.items(), key=lambda x: x[1], reverse=True))
 
 print("Feature importances:")
@@ -377,27 +405,30 @@ print("DEBUG imputer type:", type(imputer))
 
 print("\nSaving artifacts...")
 
+feature_stats = {
+    col: {
+        'mean': float(X_train_imp[col].mean()),
+        'std': float(X_train_imp[col].std()),
+        'min': float(X_train_imp[col].min()),
+        'max': float(X_train_imp[col].max()),
+    }
+    for col in X_train.columns
+}
+
 artifacts = {
     "model": final_model,
     "imputer": imputer,        # ensure object stored
     "scaler": scaler,
     "encoders": encoders,
     "rfe": rfe,
-    "selected_features": selected_features,
+    "selected_features": list(selected_features),
     "all_features": list(X.columns),
     "numeric_cols": NUMERIC_COLS,
     "cat_cols": CAT_COLS,
     "model_results": results,
-    "best_model_name": best_name,
+    "best_model_name": "Stacking",
     "global_importances": fi_sorted,
-    'feature_stats': {
-        col: {
-            'mean': float(X_imp[col].mean()),
-            'std': float(X_imp[col].std()),
-            'min': float(X_imp[col].min()),
-            'max': float(X_imp[col].max()),
-        } for col in X.columns
-    }
+    "feature_stats": feature_stats
 }
 import os
 
@@ -408,22 +439,14 @@ with open(save_path, "wb") as f:
 
 # Also save as JSON for the web app
 json_artifacts = {
-    'selected_features': selected_features,
+    'selected_features': list(selected_features),
     'all_features': list(X.columns),
     'numeric_cols': NUMERIC_COLS,
     'cat_cols': CAT_COLS,
-    'model_results': {k: {'mean_auc': float(v['mean_auc']), 'std_auc': float(v['std_auc'])}
-                      for k,v in results.items()},
-    'best_model_name': best_name,
+    'model_results': results,
+    'best_model_name': "Stacking",
     'global_importances': fi_sorted,
-    'feature_stats': {
-        col: {
-            'mean': float(X_imp[col].mean()),
-            'std': float(X_imp[col].std()),
-            'min': float(X_imp[col].min()),
-            'max': float(X_imp[col].max()),
-        } for col in X.columns
-    }
+    "feature_stats": feature_stats
 }
 
 json_path = os.path.join(os.getcwd(), "ckd_model_info.json")
