@@ -323,6 +323,7 @@ else:
 
     df_results = pd.DataFrame(results_dict)
 
+<<<<<<< HEAD
     # 🔐 Safe column detection
     if "AUC" in df_results.columns:
         df_results = df_results.sort_values(by="AUC", ascending=False)
@@ -338,6 +339,14 @@ else:
         df_results['AUC'] = df_results['AUC'].map('{:.4f}'.format)
     if "Accuracy" in df_results.columns:
         df_results['Accuracy'] = df_results['Accuracy'].map('{:.4f}'.format)
+=======
+    # Optional formatting
+    df_results = df_results.sort_values(by="AUC", ascending=False)
+    df_results['Best'] = df_results['Model'].apply(lambda x: '⭐' if x == best_name else '')
+    # Format columns safely
+    df_results['AUC'] = df_results['AUC'].map('{:.4f}'.format)
+    df_results['Accuracy'] = df_results['Accuracy'].map('{:.4f}'.format)
+>>>>>>> 7fdc5fdfa6221bd33d22f531b4e67e58bdf2c5a3
     st.dataframe(df_results, use_container_width=True, hide_index=True)
 
     # Global importance chart
