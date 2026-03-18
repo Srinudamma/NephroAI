@@ -321,10 +321,10 @@ else:
     st.markdown("## 🏆 Model Performance Leaderboard")
     st.markdown("5-fold stratified cross-validation on SMOTE-balanced UCI CKD data")
 
-    df_results = pd.DataFrame([
-        {'Model': k, 'AUC-ROC': v['mean_auc'], 'Std Dev': v['std_auc']}
-        for k,v in results_dict.items()
-    ]).sort_values('AUC-ROC', ascending=False)
+    df_results = pd.DataFrame(results_dict)
+
+# Optional formatting
+    df_results = df_results.sort_values(by="AUC", ascending=False)
     df_results['AUC-ROC'] = df_results['AUC-ROC'].map('{:.4f}'.format)
     df_results['Std Dev']  = df_results['Std Dev'].map('±{:.4f}'.format)
     df_results['Best'] = df_results['Model'].apply(lambda x: '⭐' if x == best_name else '')
