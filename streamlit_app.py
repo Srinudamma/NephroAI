@@ -322,22 +322,27 @@ else:
     st.markdown("5-fold stratified cross-validation on SMOTE-balanced UCI CKD data")
 
     df_results = pd.DataFrame(results_dict)
-
-    # 🔐 Safe column detection
+    # 🛡️ Ensure required column exists
+    if "Model" not in df_results.columns:
+        st.error("❌ Invalid model results format. Please regenerate artifacts.")
+        st.stop()
+    # 🛡️ Safe sorting
     if "AUC" in df_results.columns:
         df_results = df_results.sort_values(by="AUC", ascending=False)
     elif "Accuracy" in df_results.columns:
         df_results = df_results.sort_values(by="Accuracy", ascending=False)
-    
-    # Highlight best model
-    df_results['Best'] = df_results['Model'].apply(
-    lambda x: '⭐' if x == best_name else ''
-    )
-    # Safe formatting
-    if "AUC" in df_results.columns:
-        df_results['AUC'] = df_results['AUC'].map('{:.4f}'.format)
-    if "Accuracy" in df_results.columns:
-        df_results['Accuracy'] = df_results['Accuracy'].map('{:.4f}'.format)
+    # 🛡️ Highlight best model
+    df_results["Best"] = df_results["Model"].apply(
+        lambda x: "⭐" if x == best_name else ""
+        )
+    # 🛡️ Safe formatting (only numeric values)
+    for col in df_results.columns:
+        if col != "Model" and col != "Best":
+            try:
+                df_results[col] = df_results[col].astype(float).map(lambda x: f"{x:.4f}")
+            except:
+                pass  # skip non-numeric columns safely
+    # Display
     st.dataframe(df_results, use_container_width=True, hide_index=True)
 
     # Global importance chart
