@@ -46,13 +46,21 @@ st.markdown("""
 # ─── Load Artifacts ───────────────────────────────────────────────────────────
 @st.cache_resource
 def load_artifacts():
+    import os
+    pkl_path = 'ckd_artifacts.pkl'
+    
+    # If pkl missing or incompatible, regenerate it
+    if not os.path.exists(pkl_path):
+        with st.spinner("⏳ First-time setup: Training models... (2-3 mins)"):
+            import subprocess
+            subprocess.run(["python", "ckd_pipeline.py"], check=True)
+    
     try:
-        with open('ckd_artifacts.pkl', 'rb') as f:
+        with open(pkl_path, 'rb') as f:
             return pickle.load(f)
-    except FileNotFoundError:
-        st.error("❌ Model artifacts not found. Please run `python ckd_pipeline.py` first.")
+    except Exception as e:
+        st.error(f"❌ Failed to load artifacts: {e}")
         return None
-
 artifacts = load_artifacts()
 
 # ─── FIX 1: Single None check BEFORE any unpack ───────────────────────────────
