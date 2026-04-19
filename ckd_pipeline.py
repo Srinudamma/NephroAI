@@ -64,7 +64,6 @@ df = df.rename(columns={
 
 # Drop unnecessary column
 df = df.drop('id', axis=1, errors='coerce')
-df = df.fillna(0)
 
 # Clean target column
 df['class'] = df['class'].astype(str).str.strip().str.lower()
