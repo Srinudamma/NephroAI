@@ -189,7 +189,9 @@ def run_prediction(input_data):
 
     # Enforce correct column order
     df = df[all_feats]
-    df = df.apply(pd.to_numeric, errors='ignore')
+    for col in df.columns:
+      df[col] = pd.to_numeric(df[col], errors='coerce')
+    
 
     # Encode categoricals safely
     for col, enc in encoders.items():
