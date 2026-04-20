@@ -16,7 +16,7 @@
 
 ## 🌐 Live Demo
 
-👉 [nephroai.streamlit.app](https://nephroai-opx9j6oxzjhge2ohhbzc7n.streamlit.app)
+👉 [nephroai.streamlit.app](https://nephroai-opx9j6oxzjhge2ohhbzc7n.streamlit.app/)
 
 ---
 
