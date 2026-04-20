@@ -182,18 +182,15 @@ input_data = {
 def run_prediction(input_data):
     df = pd.DataFrame([input_data])
 
-    # Ensure ALL training columns exist
+    # Ensure all features exist
     for col in all_feats:
         if col not in df.columns:
             df[col] = np.nan
 
-    # Enforce correct column order
+    # Maintain column order
     df = df[all_feats]
-    for col in df.columns:
-      df[col] = pd.to_numeric(df[col], errors='coerce')
-    
 
-    # Encode categoricals safely
+    # 1️⃣ Encode categorical FIRST
     for col, enc in encoders.items():
         if col in df.columns:
             df[col] = df[col].astype(str)
@@ -201,20 +198,24 @@ def run_prediction(input_data):
                 lambda x: enc.transform([x])[0] if x in enc.classes_ else np.nan
             )
 
-    # Impute
+    # 2️⃣ Convert ONLY numeric columns
+    for col in artifacts['numeric_cols']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # 3️⃣ Impute
     X_imp = pd.DataFrame(imputer.transform(df), columns=all_feats)
 
-    # Scale
+    # 4️⃣ Scale
     X_sc = pd.DataFrame(scaler.transform(X_imp), columns=all_feats)
 
-    # Feature selection
+    # 5️⃣ Feature selection
     X_sel = X_sc.values[:, rfe.support_]
 
-    # Predict
+    # 6️⃣ Predict
     prob = model.predict_proba(X_sel)[0, 1]
 
     return prob, X_sel[0], X_sc
-
 
 # ─── FIX 3: local_explain — signature aligned (no unused background args) ─────
 def local_explain(model, sample, features):
